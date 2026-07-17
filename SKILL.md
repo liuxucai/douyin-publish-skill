@@ -1,228 +1,94 @@
 ---
 name: douyin-publisher
-description: 抖音创作平台（creator.douyin.com）文章发布助手。全自动化填写标题/摘要/正文+AI生成封面+点击发布。支持草稿续编+验证发布结果。
+description: 抖音创作平台（creator.douyin.com）文章发布助手。全自动化填写标题/摘要/正文 + 右侧「文章头图」AI生成封面 + 点击发布 + 验证结果。所有结论均经 2026-07-17 实测验证。
 ---
 
-# 抖音创作平台文章发布 Skill v5
+# 抖音创作平台文章发布 Skill
 
 ## 适用场景
 
-将文章发布到抖音创作者平台。**全流程自动化**：填写标题/摘要/正文 → AI生成封面 → 点击发布 → 验证结果。
+将文章发布到抖音创作者平台。**全流程自动化**：填写标题/摘要/正文 → 右侧「文章头图」AI 生成封面 → 点击发布 → 验证结果。
 
-## 🚀 v5 核心更新
+## 核心约束（实测结论，务必遵守）
 
-| 问题 | v4 描述 | v5 修正 |
-|------|---------|---------|
-| **发布按钮** | ❌ 认为不可自动化（安全验证） | ✅ **完全可自动化**——`element.click()` 即可，不触发验证 |
-| **"高清发布"误解** | ❌ 认为是发布按钮 | ✅ 那是左侧导航栏，点它会到上传中心。真正的发布按钮是页面底部的 **"发布" (button.primary)** |
-| **点击方式** | ❌ CDP dispatchMouseEvent | ✅ JS `element.click()` 更可靠 |
-| **AI生成延迟** | ❌ 未指定等待方式 | ✅ 轮询 `"AI智能生成中"` 文本判断完成 |
-| **草稿续编** | ❌ 未对接 | ✅ 检测"继续编辑"弹窗 → 跳过填写直接点发布 |
+1. **封面必填**：抖音要求文章头图必填。不生成封面直接点发布会弹 Toast「没有选择封面」并拦截发布。旧文档「封面可选 / 默认有封面」是**错误**的。
+2. **AI 生成不清空内容**：点 AI生成不会清空已填的标题/摘要/正文。旧文档「AI生成会清空内容」是**错误**的。
+3. **封面用 background-image 加载**：封面不是 `<img>` 标签，而是右侧「文章头图」容器的 **`background-image`**（抖音 CDN 图）。判定封面是否生成要同时认 `<img src>`（非 data:）和 `background-image`（正则 `/url\("https?:/`）。
+4. **「AI生成」是 `<span>` 不是 `<button>`**，且**默认在视口外**（页面顶部往上约 753px），必须先 `scrollIntoView` 才能点中。
+5. **点击用 CDP 真实鼠标事件**：JS 的 `element.click()` 是合成事件，会被 React 拦截（实测无效）。必须用 `Input.dispatchMouseEvent`（mousePressed+mouseReleased，`isTrusted:true`）。旧文档「用 JS click 更可靠」是**错误**的。
+6. **发布按钮可自动化、不触发风控**：页面底部「发布」按钮用 CDP 真鼠标点击**不触发**短信验证。旧文档「发布触发风控需人工」是**错误**的（之前的风控是因为点错了左侧「高清发布」导航按钮）。
+7. **封面异步加载**：点完 AI生成后 `background-image` 是异步出现的，需**轮询等待**（最多约 30s），不能只等几秒。
 
-## ⚠️ 已知陷阱（必读）
+## 环境与启动
 
-### 陷阱1：两个「发布」按钮——别点错！
-
-页面中存在**两个**不同的"发布"相关按钮：
-
-| 按钮 | 位置 | 效果 | 是否目标 |
-|------|------|------|---------|
-| **"高清发布"** | 左侧导航栏顶部（红色下拉） | 跳转到上传中心 `/content/upload` | ❌ |
-| **"发布"** | 页面底部表单（button.primary） | 提交文章 | ✅ |
-
-**选择方法**：查找 `button` 中 `innerText.trim() === '发布'` 且 `className` 包含 `primary` 的那个。
-
-### 陷阱2：点击方式——用 JS click() 而不是 CDP 鼠标事件
-
-| 方式 | 结果 |
-|------|------|
-| CDP `Input.dispatchMouseEvent` | ❌ 固定定位按钮，坐标点击不生效 |
-| CDP `Runtime.evaluate` + `element.click()` | ✅ 可靠 |
-
-### 陷阱3：AI生成可能清空已填写内容
-
-AI生成封面后页面可能重渲染。**正确顺序**：填写内容 → AI生成 → 检查内容，如丢失则重新填写 → 点击发布。
-
-### 陷阱4：Chrome 用户数据目录
-
-必须用**固定目录**保存登录态和草稿：
-
-```powershell
-$profileDir = "$env:USERPROFILE\.chrome_qclaw_stable"
-```
-
-不要用临时目录，否则每次都是新浏览器（无登录态、无草稿）。
-
-## 环境要求
-
-| 项目 | 要求 |
-|------|------|
-| 浏览器 | Chrome（正式版，固定用户目录） |
-| 控制工具 | Node.js CDP WebSocket（内置，无需 `ws` 模块） |
-| Node.js | v18+（v22 内置 WebSocket） |
-
-## 启动 Chrome
+使用 **isolated-browser skill** 拉起隔离 Chrome（固定 profile `~/.chrome_qclaw_stable` + 调试端口 9222），不要碰用户常驻浏览器、也不要用裸 CDP 误关标签。
 
 ```powershell
 $chromePath = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 $profileDir = "$env:USERPROFILE\.chrome_qclaw_stable"
 $url = "https://creator.douyin.com/creator-micro/content/post/article?enter_from=publish_page&media_type=article&type=new"
-
-if (-not (Test-Path $profileDir)) {
-  New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-}
-
-Start-Process $chromePath -ArgumentList @(
-  "--remote-debugging-port=9222",
-  "--user-data-dir=$profileDir",
-  $url
-)
+if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Path $profileDir -Force | Out-Null }
+Start-Process $chromePath -ArgumentList @("--remote-debugging-port=9222","--user-data-dir=$profileDir",$url)
 ```
 
-## 核心技术方案
+启动后首次手动登录抖音，固定目录会持久保存登录态。
 
-### 无需 `ws` 模块
+## 使用方式
 
-Node.js v22 内置 `WebSocket` 全局对象，可直接使用。避免因中文用户名路径导致 npm 安装失败的问题。
+1. 把文章内容写入 `scripts/article_job.txt`，格式：
+   ```
+   标题：<文章标题，≤30字>
+   摘要：<摘要，≤30字>
+   正文：
+   <段落1>
 
-```js
-const ws = new WebSocket(wsUrl);
-```
+   <段落2>
+   ...
+   ```
+2. 运行完整发布：
+   ```bash
+   node scripts/publish_now2.js
+   ```
+3. 发布后检查结果（可选）：
+   ```bash
+   node scripts/check_publish.js
+   ```
 
-### CDP 通信核心
+## 表单填写要点
 
-```js
-function cdp(method, params = {}) {
-  return new Promise((resolve) => {
-    const id = ++msgId;
-    pending[id] = resolve;
-    ws.send(JSON.stringify({ id, method, params }));
-  });
-}
+| 字段 | 元素 | 方法 |
+|------|------|------|
+| 标题 | `input[placeholder*="文章标题"]` | 原生 `value` setter + 派发 `input` 事件 |
+| 摘要 | `input[placeholder*="摘要"]`（实为 `<input maxlength=30>`，**不是** textarea） | 原生 `value` setter + 派发 `input` 事件 |
+| 正文 | `.ProseMirror[contenteditable="true"]` | 写 `innerHTML`（分段 `<p>`、转义 `& < >`）+ 派发 `beforeinput`(insertFromPaste) + `input` 事件 |
 
-function js(expr) {
-  return cdp('Runtime.evaluate', {
-    expression: expr,
-    returnByValue: true,
-    awaitPromise: true
-  });
-}
-```
+## 封面流程（关键）
 
-### 关键元素定位
+1. 锁定右侧「文章头图」容器：`document.querySelectorAll('*')` 中找文本含「文章头图」且 innerText<400 的最小容器。
+2. 若封面未生成（无 `<img>` 真图、无 `background-image` 真图）：
+   - 找「AI生成」`<span>`：文本含「AI生成」且自身无文本子节点的最小叶子元素。
+   - `scrollIntoView({block:'center'})` 滚入视口，取 `getBoundingClientRect()` 中心点。
+   - 用 CDP 真鼠标事件点击该坐标。
+3. **轮询** `background-image` 是否出现真实图（最多约 30s），出现后才继续。
 
-```js
-// 标题
-document.querySelector('input[placeholder*="标题"]')
-// 摘要
-document.querySelector('input[placeholder*="摘要"]')
-// 正文编辑器
-document.querySelector('.ProseMirror')
-// "有文章头图" radio（第一个）
-document.querySelectorAll('input[type="radio"]')[0]
-// AI生成按钮（文本匹配）
-Array.from(document.querySelectorAll('div, span, button')).find(
-  e => e.innerText && e.innerText.trim() === 'AI生成'
-)
-// 发布按钮（class包含primary的button）
-Array.from(document.querySelectorAll('button')).find(
-  b => b.innerText && b.innerText.trim() === '发布' && (b.className || '').includes('primary')
-)
-```
+## 发布流程
 
-### 设置 input value（React 受控组件）
-
-```js
-var setter = Object.getOwnPropertyDescriptor(
-  window.HTMLInputElement.prototype, 'value'
-).set;
-setter.call(input, '值');
-input.dispatchEvent(new Event('input', {bubbles: true}));
-```
-
-## 完整自动化流程
-
-### 脚本一：auto_publish.js（完整流程）
-
-```bash
-node scripts/auto_publish.js
-```
-
-执行步骤：
-1. 连接 Chrome CDP（端口 9222-9225）
-2. 导航到文章编辑页
-3. 关闭弹窗（"我知道了"/"继续编辑"）
-4. 填写标题、摘要、正文
-5. 选择"有文章头图"
-6. 点击"AI生成"等待完成（轮询 `AI智能生成中` 文本消失）
-7. 滚动到底部，用 `element.click()` 点击「发布」按钮
-8. 等待跳转，截图验证
-9. 检查 URL 是否跳转到 `/content/manage`
-
-### 脚本二：验证发布结果
-
-```bash
-node scripts/check_publish.js
-```
-
-检查内容管理页的作品数量和标签页状态。
+1. 发布按钮：`button.button-dhlUZE.primary-cECiOJ`（页面底部「发布」）。
+2. 点前先 `scrollIntoView({block:'center'})` 入视口。
+3. CDP 真鼠标事件点击。
+4. 校验：URL 离开 `content/post/article` 且出现 Toast「发布成功」即为成功（状态可能显示「审核中」）。
 
 ## 文件结构
 
 | 文件 | 说明 |
 |------|------|
-| `scripts/auto_publish.js` | ⭐ **完整自动发布**（填写+AI+发布） |
-| `scripts/auto_publish2.js` | 改进版（CDP 坐标点击，不推荐） |
-| `scripts/auto_publish3.js` | 改进版（CDP 坐标+JS click 混合，不推荐） |
-| `scripts/auto_publish4.js` | ✅ **最终推荐**（纯 JS click 发布） |
-| `scripts/check_publish.js` | 验证发布结果 |
-| `scripts/set_cover_ai.js` | 仅 AI 生成封面 |
-| `scripts/fill_douyin_native.js` | 仅填写表单（原型） |
-| `scripts/fill_final.js` | 仅填写摘要（原型） |
-| `scripts/fill_abstract.js` | 仅填写摘要（原型） |
-| `references/troubleshooting.md` | 故障排查 |
-
-## 核心工作流程
-
-```
-1. 导航到发布页
-   └─ 检测"继续编辑"弹窗 → 跳过内容填写
-2. 内容填写
-   ├─ 标题（input + 原生 value setter）
-   ├─ 摘要（input + 原生 value setter）
-   └─ 正文（.ProseMirror + innerHTML）
-3. 选中"有文章头图"
-   └─ radio[0].checked = true
-4. 点击 AI生成
-   └─ 轮询等待"AI智能生成中"消失
-5. 滚动到底部
-6. JS element.click() 点击「发布」
-7. 等待 URL 跳转到 /content/manage
-8. 截图验证
-```
+| `scripts/publish_now2.js` | ⭐ 完整自动发布（唯一主流程，含封面轮询等待） |
+| `scripts/check_publish.js` | 发布后检查状态 / 截图 |
+| `scripts/article_job.txt` | 待发布文章内容 |
+| `references/troubleshooting_2026-07-17.md` | 完整问题—解法清单（含已推翻的旧错误结论对照） |
 
 ## 已知限制
 
-- Chrome 必须已以 `--remote-debugging-port=9222` 启动
-- 首次需要手动登录抖音账号（固定目录保存登录态）
-- 文章正文约 500 字（抖音限制，实际测试 526 字可行）
-- 标题 ≤30 字，摘要 ≤30 字
-
-## 实战经验（2026-07-09 更新）
-
-### 发布按钮完全可自动化
-
-**发现**：之前 v4 认为发布按钮会触发安全验证（短信验证码），导致需手动点击。经实际测试：
-- **JS `element.click()` 点击 button.primary 发布，不触发安全验证**
-- **之前的"安全验证"是因为点错了按钮**——点的是左侧导航栏的"高清发布"，而非页面底部的"发布"
-- **CDP 坐标点击无效**，必须用 JS 注入的 `element.click()`
-
-### AI生成等待策略
-
-轮询 `document.body.innerText.includes('AI智能生成中')`：
-- 约 7-14 秒生成完成
-- 判断文本返回 `'gen'` 或 `'done'`
-
-### 草稿续编
-
-重新进入发布页时，如果弹出"继续编辑"弹窗，说明有已保存的草稿。点击"继续编辑"后，直接滚动到底部点击发布即可（内容已在）。
+- Chrome 必须已以 `--remote-debugging-port=9222` 启动且登录抖音。
+- 文章正文建议 ≤8000 字（抖音限制），实测约 450–526 字稳定。
+- 抖音 UI class 名可能随版本变化（如 `button.button-dhlUZE.primary-cECiOJ`），若定位失败需重新探查最新选择器。
