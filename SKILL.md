@@ -48,7 +48,7 @@ curl -X PUT "http://127.0.0.1:9222/json/new?https://creator.douyin.com/creator-m
    ```
 2. 完整发布（配图可选但封面必填，强烈建议传图）：
    ```bash
-   node scripts/publish_car.js "D:\skills\car\11.jpg"
+   node scripts/publish_car.js "<素材目录>\11.jpg"
    ```
    脚本自动：填标题/摘要/正文 → 上传配图到「文章头图」+「封面设置」→ 关裁剪框/封面编辑器 → 点发布 → 校验。
 3. 发布后排查页面状态（登录态/弹窗/可见按钮/截图）：

@@ -18,7 +18,7 @@ function findTarget(port) {
 }
 
 async function main() {
-  for (const p of [9222, 9223]) {
+  for (const p of [parseInt(process.env.ISOB_CDP_PORT, 10) || 9222, 9223]) {
     const wsUrl = await findTarget(p);
     if (wsUrl) { await check(wsUrl); return; }
   }

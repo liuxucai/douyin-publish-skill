@@ -34,10 +34,11 @@ function parseJob(text) {
   }
   return { title: title.trim(), summary: summary.trim(), body: body.trim() };
 }
+const CDP_PORT = parseInt(process.env.ISOB_CDP_PORT, 10) || 9222;
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function cdpGet(p) {
   return new Promise((res, rej) => {
-    http.get({ host: '127.0.0.1', port: 9222, path: p }, r => {
+    http.get({ host: '127.0.0.1', port: CDP_PORT, path: p }, r => {
       let d = ''; r.on('data', c => d += c);
       r.on('end', () => { try { res(JSON.parse(d)); } catch (e) { rej(e); } });
     }).on('error', rej);

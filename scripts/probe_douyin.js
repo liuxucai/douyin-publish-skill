@@ -8,8 +8,9 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const WS = global.WebSocket;
+const CDP_PORT = parseInt(process.env.ISOB_CDP_PORT, 10) || 9222;
 function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
-function cdpGet(p){return new Promise((res,rej)=>{http.get({host:'127.0.0.1',port:9222,path:p},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>{try{res(JSON.parse(d));}catch(e){rej(e);}});}).on('error',rej);});}
+function cdpGet(p){return new Promise((res,rej)=>{http.get({host:'127.0.0.1',port:CDP_PORT,path:p},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>{try{res(JSON.parse(d));}catch(e){rej(e);}});}).on('error',rej);});}
 class CDP{constructor(url){this.url=url;this.ws=null;this.p={};this.id=0;}
 connect(){return new Promise((a,b)=>{const ws=new WS(this.url);this.ws=ws;ws.onopen=()=>a();ws.onerror=()=>b(new Error('ws'));ws.onmessage=ev=>{const j=JSON.parse(ev.data);if(j.id&&this.p[j.id]){this.p[j.id](j.result);delete this.p[j.id];}};});}
 send(m,pr,t=20000){return new Promise((a,b)=>{const id=++this.id;this.p[id]=a;this.ws.send(JSON.stringify({id,method:m,params:pr||{}}));setTimeout(()=>{if(this.p[id]){delete this.p[id];b(new Error('timeout:'+m));}},t);});}
