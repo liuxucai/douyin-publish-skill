@@ -2,10 +2,11 @@
 /**
  * 抖音发布页探针 - 登录态 / 页面结构 / 弹窗 / 可见按钮 / 截图
  * 用法: node probe_douyin.js
- * 输出: 控制台 JSON + probe_screenshot.png（本目录）
+ * 输出: 控制台 JSON + 系统临时目录下的 douyin_probe_screenshot.png（不写进仓库）
  */
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const WS = global.WebSocket;
 const CDP_PORT = parseInt(process.env.ISOB_CDP_PORT, 10) || 9222;
@@ -31,6 +32,6 @@ async eval(expr){const r=await this.send('Runtime.evaluate',{expression:expr,ret
   console.log('头图区:', await c.eval(`(function(){var els=[].slice.call(document.querySelectorAll('*')).filter(function(e){return /文章头图/.test(e.innerText||'')&&e.innerText.length<400;});return els.length?(els[els.length-1].innerText||'').replace(/\\n/g,'|').slice(0,150):'(未找到)';})()`));
   const btns=JSON.parse(await c.eval(`(function(){var btns=[].slice.call(document.querySelectorAll('button,[role=button],[class*=btn],[class*=button]')).filter(function(e){return !!(e.offsetWidth||e.offsetHeight);});return JSON.stringify(btns.map(function(e){var r=e.getBoundingClientRect();return {t:(e.innerText||'').replace(/\\n/g,'|').slice(0,16),cls:(e.className||'').slice(0,50),x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};}));})()`));
   console.log('可见按钮:');btns.filter(b=>b.t).forEach(b=>console.log(' ',JSON.stringify(b)));
-  try{const shot=await c.send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(path.join(__dirname,'probe_screenshot.png'),Buffer.from(shot.data,'base64'));console.log('截图: probe_screenshot.png');}catch(e){}
+  try{const shot=await c.send('Page.captureScreenshot',{format:'png'});const sp=path.join(os.tmpdir(),'douyin_probe_screenshot.png');fs.writeFileSync(sp,Buffer.from(shot.data,'base64'));console.log('截图: '+sp);}catch(e){}
   process.exit(0);
 })().catch(e=>{console.error('FATAL',e.message);process.exit(1);});

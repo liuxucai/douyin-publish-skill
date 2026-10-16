@@ -1,11 +1,14 @@
 'use strict';
 /**
  * 抖音文章发布 - 一体化 CDP 驱动（2026-09-23 实测整合版）
- * 用法: node publish_car.js [配图路径]
- *   - 配图路径可选；传入则自动上传到「文章头图」和「封面设置」（含裁剪确认、关闭封面编辑器）
- *   - 不传则发布纯文本文章（注意：封面必填，纯文发布会被拦截）
+ * 用法: node publish_car.js [图1 图2 图3 ...] [--keyword "婚车租车" --tags "婚庆用车,婚庆婚车车队"]
+ *   - 配图默认 3 张（按标签从素材库自动挑）；也可用位置参数直接给多张本地路径
+ *   - 头图按顺序逐个尝试上传；封面用第 1 张（含裁剪确认、关闭封面编辑器）
+ *   - ⚠️ 2026-10-12 平台改版：文章头图**仅支持 1 张**（入口为单选 input，传完即卸载），
+ *        脚本仍按多张循环，入口消失即停（向前兼容）。
+ *   - --no-image 不配图（注意：封面必填，纯文发布会被拦截）；--image-top N 改张数
  *
- * 流程: 读 article_job.txt -> 填标题/摘要/正文 -> 上传配图(头图+封面, fileChooser 拦截)
+ * 流程: 读 article_job.txt -> 填标题/摘要/正文 -> 上传配图(多张头图+封面, fileChooser 拦截)
  *       -> 裁剪弹窗点「确定」-> 封面编辑器点「完成」-> (可选)添加话题 -> 点「发布」-> 校验离开编辑页
  *
  * 依赖: 隔离 Chrome（isolated-browser skill, profile ~/.chrome_qclaw_stable, CDP 9222, 已登录抖音）
@@ -13,12 +16,36 @@
  */
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const WS = global.WebSocket;
 
 const SKILL_DIR = __dirname;
 const JOB_FILE = path.join(SKILL_DIR, 'article_job.txt');
-const IMG_FILE = process.argv[2] || '';
+// 位置参数 = 显式图片路径。
+// ⚠️ 必须排除「--keyword/--tags 等 flag 的值」：这些值不以 -- 开头，
+//    简单的 startsWith('--') 过滤会把 `--keyword 婚车租车` 的「婚车租车」
+//    误当成图片路径（2026-10-12 实测 FATAL 配图不存在）。
+const POS = (() => {
+  const A = process.argv.slice(2);
+  const FLAGS_WITH_VALUE = ['--keyword', '--tags', '--image-top', '--image-dir'];
+  const flagVals = new Set();
+  for (let i = 0; i < A.length; i++) {
+    if (FLAGS_WITH_VALUE.includes(A[i]) && A[i + 1] && !A[i + 1].startsWith('--')) flagVals.add(A[i + 1]);
+  }
+  return A.filter(a => !a.startsWith('--') && !flagVals.has(a));
+})();
+const FL = {};
+{
+  const A = process.argv.slice(2);
+  for (let i = 0; i < A.length; i++) {
+    if (A[i] === '--keyword') FL.keyword = A[++i];
+    else if (A[i] === '--tags') FL.tags = A[++i];
+    else if (A[i] === '--image-top') FL.top = A[++i];
+    else if (A[i] === '--image-dir') FL.dir = A[++i];
+    else if (A[i] === '--no-image') FL.noImage = true;
+  }
+}
 const TOPICS = []; // 可选话题，如 ['婚车']；无匹配候选时自动跳过
 const POST_URL = 'https://creator.douyin.com/creator-micro/content/post/article?enter_from=publish_page&media_type=article&type=new';
 
@@ -123,7 +150,7 @@ async function closeCoverEditor(c) {
   return true;
 }
 // 通过 fileChooser 拦截上传本地图
-async function uploadViaChooser(c, clickTxt) {
+async function uploadViaChooser(c, clickTxt, imgFile) {
   const coord = await c.eval(LEAF_COORD(clickTxt));
   if (!coord) { console.log('未找到入口:', clickTxt); return false; }
   const co = JSON.parse(coord);
@@ -132,7 +159,7 @@ async function uploadViaChooser(c, clickTxt) {
   await c.clickXY(co.x, co.y);
   const fc = await fcP;
   if (!fc || !fc.backendNodeId) { console.log('未捕获 fileChooser 事件（可能有弹窗遮挡入口）'); return false; }
-  await c.send('DOM.setFileInputFiles', { files: [IMG_FILE], backendNodeId: fc.backendNodeId });
+  await c.send('DOM.setFileInputFiles', { files: [imgFile], backendNodeId: fc.backendNodeId });
   await sleep(2000);
   await confirmCrop(c);
   await closeCoverEditor(c);
@@ -144,7 +171,16 @@ async function uploadViaChooser(c, clickTxt) {
   console.log('=== 抖音文章发布 ===');
   if (!fs.existsSync(JOB_FILE)) { console.log('ERR: 缺少 article_job.txt'); process.exit(3); }
   const job = parseJob(fs.readFileSync(JOB_FILE, 'utf8'));
-  console.log('主题:', job.title, '| 正文', job.body.length, '字 | 配图:', IMG_FILE || '(无)');
+
+  // 配图：位置参数（可多个）优先；否则按 --keyword/--tags 从素材库自动挑 Top-N（默认 3 张）
+  const { planImages } = require(path.resolve(__dirname, '..', '..', 'isolated-browser', 'scripts', 'post_images.js'));
+  const plan = planImages({
+    explicit: POS, noImage: FL.noImage, keyword: FL.keyword || job.title, tags: FL.tags,
+    top: FL.top, dir: FL.dir, paraCount: job.body.split(/\n{2,}/).filter(p => p.trim()).length,
+  });
+  const IMAGES = plan.images;
+  console.log('主题:', job.title, '| 正文', job.body.length, '字 | 配图:', IMAGES.length + '张');
+  if (plan.detail) plan.detail.chosen.forEach((c2, i) => console.log(`  ${i + 1}) 图${c2.number} ${c2.name || ''} → ${c2.image}`));
 
   const ws = await getWs();
   if (!ws) { console.log('ERR: 无 douyin 标签页（先用 isolated-browser 启动隔离 Chrome 并登录抖音）'); process.exit(3); }
@@ -182,12 +218,24 @@ async function uploadViaChooser(c, clickTxt) {
   await sleep(800);
   console.log('FORM:', await c.eval(`JSON.stringify({title:(document.querySelector('input[placeholder*=文章标题]')||{}).value||'',bodyLen:(document.querySelector('.ProseMirror')||{innerText:''}).innerText.length})`));
 
-  // 上传配图（文章头图 + 封面设置）
-  if (IMG_FILE) {
-    if (!fs.existsSync(IMG_FILE)) { console.log('ERR: 配图不存在:', IMG_FILE); process.exit(3); }
+  // 上传配图（文章头图可多张；封面用第 1 张）
+  if (IMAGES.length) {
+    for (const p of IMAGES) if (!fs.existsSync(p)) { console.log('ERR: 配图不存在:', p); process.exit(3); }
     await c.send('Page.setInterceptFileChooserDialog', { enabled: true });
-    console.log('头图上传:', await uploadViaChooser(c, '点击上传图片'));
-    console.log('封面上传:', await uploadViaChooser(c, '点击上传封面图'));
+    // ⚠️ 2026-10-12 改版实测：文章头图入口是**单选** input（fileChooser.isMultiple=false），
+    // 上传 1 张后「点击上传图片」入口直接消失、file input 从 DOM 卸载（querySelectorAll('input[type=file]').length===0），
+    // 也没有"继续添加"入口 → 当前版本文章体裁**只支持 1 张头图**。
+    // 这里仍按多张逐个尝试（向前兼容：平台恢复多图时无需改代码），入口消失即停。
+    let uploaded = 0;
+    for (let i = 0; i < IMAGES.length; i++) {
+      const ok = await uploadViaChooser(c, '点击上传图片', IMAGES[i]);
+      if (!ok) break; // 入口消失 = 平台限制（单头图）或弹窗遮挡
+      uploaded++;
+    }
+    if (uploaded < IMAGES.length) {
+      console.log(`头图只传了 ${uploaded}/${IMAGES.length}（抖音 2026-10-12 改版：文章头图仅支持 1 张，入口为单选 input 且传完即卸载）`);
+    }
+    console.log('封面上传（用第 1 张）:', await uploadViaChooser(c, '点击上传封面图', IMAGES[0]));
     await c.send('Page.setInterceptFileChooserDialog', { enabled: false });
     for (let k = 0; k < 8; k++) {
       const s = JSON.parse(await c.eval(`JSON.stringify({imgs:[].slice.call(document.querySelectorAll('img')).filter(function(i){return i.src&&i.src.indexOf('data:')!==0&&(i.naturalWidth||0)>50;}).length})`));
@@ -223,14 +271,20 @@ async function uploadViaChooser(c, clickTxt) {
   console.log('点发布 @', pb);
   await c.clickXY(o.x, o.y);
 
-  let done = false;
+  // 发布成功判据（2026-10-12 实测复核）：URL 离开编辑页 content/post/article，
+  // 且 Toast 出现「发布成功」。⚠️ 不要用「图片上传成功」Toast 判成功（P8，会残留十几秒）。
+  let done = false, lastToast = '';
   for (let i = 0; i < 15; i++) {
     await sleep(1000);
     const s = await c.eval(`JSON.stringify({onEditor:location.href.includes('content/post/article'),toast:(document.querySelector('[class*=toast],[class*=Toast]')||{}).innerText||''})`);
+    const st = JSON.parse(s);
+    lastToast = st.toast || lastToast;
     console.log('OBS@' + (i + 1) + 's', s);
-    if (!JSON.parse(s).onEditor) { done = true; break; }
+    if (!st.onEditor) { done = true; break; }
   }
-  console.log(done ? '>>> 发布成功（Toast 应含「发布成功」，列表可在内容管理页刷新确认）' : '>>> 仍在编辑页，请用 probe_douyin.js 排查');
-  try { const shot = await c.send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(SKILL_DIR, 'final_result.png'), Buffer.from(shot.data, 'base64')); } catch (e) {}
+  console.log('最终 Toast:', JSON.stringify(lastToast));
+  console.log(done ? '>>> 发布成功（URL 已离开编辑页）' : '>>> 仍在编辑页，请用 probe_douyin.js 排查');
+  // 截图写到系统临时目录，不污染 skill 仓库（2026-10-12 修正）
+  try { const shot = await c.send('Page.captureScreenshot', { format: 'png' }); const sp = path.join(os.tmpdir(), 'douyin_publish_result.png'); fs.writeFileSync(sp, Buffer.from(shot.data, 'base64')); console.log('截图:', sp); } catch (e) {}
   process.exit(done ? 0 : 1);
 })().catch(e => { console.error('FATAL', e.message); process.exit(1); });

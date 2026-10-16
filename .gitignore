@@ -1,0 +1,10 @@
+# 运行产物（截图等）不入库
+*.png
+!references/*.png
+
+# 工作区
+.workspace/
+**/.workspace/
+node_modules/
+*.log
+*.tmp
